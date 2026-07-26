@@ -1,0 +1,25 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local demo stores and generated feature stores
+demo_store/
+example_store/
+katago_feature_store/
+normalized/
+raw/
+index/
+logs/
+
+# KataGo binaries, models, and large generated outputs
+katago
+*.bin.gz
+*.responses*.jsonl
+raw.responses*.jsonl
+*.jsonl.zst
+*.npz
+*.npy
+
+# Benchmark outputs can be regenerated; commit only small summary files manually if needed.
+maxvisits_*/
+benchmark_*/

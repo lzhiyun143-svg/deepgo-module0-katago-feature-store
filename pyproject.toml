@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "module0-katago-feature-store"
+version = "0.1.0"
+description = "MVP shared KataGo feature store for Human Decision Model experiments"
+requires-python = ">=3.10"
+dependencies = ["numpy"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["module0_katago_store*"]
+
