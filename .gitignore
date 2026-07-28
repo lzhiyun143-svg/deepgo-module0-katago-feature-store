@@ -1,3 +1,9 @@
+# IDE settings
+.vscode
+
+# Environment file 
+.env
+
 __pycache__/
 *.pyc
 .pytest_cache/

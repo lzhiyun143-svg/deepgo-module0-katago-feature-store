@@ -153,6 +153,43 @@ A copy of the tuned config is included in this repository:
 configs/analysis.a10.maxvisits25.cfg
 ```
 
+## Local runtime and benchmark configuration
+
+The repository now uses a repo-scoped `.env` file for local KataGo runtime and
+benchmark settings. The tuning script at `scripts/quick_tune_katago_params.sh`
+automatically loads `.env` from the repository root, so you no longer need to
+hard-code `/root/...` paths into the script.
+
+The following variables are supported:
+
+```bash
+KATAGO=/path/to/katago
+MODEL=/path/to/model.bin.gz
+CONFIG=/path/to/analysis.cfg
+BASE_CONFIG=/path/to/analysis.cfg
+REQUESTS=/path/to/requests.jsonl
+OUT_ROOT=/path/to/analysis_logs/quick_param_tuning
+SECONDS_PER_CASE=300
+
+# Optional CUDA tuning
+CUDA_DEVICE_IDS=0
+CUDA_NUM_NN_SERVER_THREADS_PER_MODEL=1
+CUDA_USE_FP16=auto
+
+# Ensure the conda runtime can find cuDNN
+LD_LIBRARY_PATH=/path/to/conda/env/lib:${LD_LIBRARY_PATH:-}
+```
+
+The script uses these values to:
+
+- choose the KataGo binary, model, config, and request file
+- create a per-run output directory under `analysis_logs/`
+- write per-case configs with stronger GPU/CPU-oriented defaults for the
+  benchmark sweep
+- apply optional CUDA device selection and FP16 settings
+
+A ready-to-copy example environment file is available at `.env.example`. After modifying that, you can copy it to `.env` in the repository to make the tuning script work without further edits.
+
 ## Quick Parameter Tuning Result
 
 Quick tuning was run on 2026-07-28 with 100 benchmark games. Each parameter
