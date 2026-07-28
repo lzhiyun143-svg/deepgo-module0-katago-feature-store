@@ -147,6 +147,11 @@ reportAnalysisWinratesAs = SIDETOMOVE
 ```
 
 These values are written in `/root/katago_bin/analysis.cfg` on the server.
+A copy of the tuned config is included in this repository:
+
+```text
+configs/analysis.a10.maxvisits25.cfg
+```
 
 ## Quick Parameter Tuning Result
 
