@@ -1,8 +1,10 @@
+import json
 from pathlib import Path
 
 import numpy as np
 
 from module0_katago_store import FeatureStore
+from module0_katago_store.analysis import run_katago_analysis_streaming
 from module0_katago_store.coords import coord_to_flat, coord_to_rc, flat_to_coord, rc_to_coord
 from module0_katago_store.io import write_jsonl_atomic
 from module0_katago_store.manifest import build_manifests
@@ -60,3 +62,60 @@ def test_end_to_end_store(tmp_path: Path):
     assert feat["policy_map"].shape == (19, 19)
     assert feat["ownership_map"].shape == (19, 19)
     assert feat["root_winrate"] == 0.55
+
+
+def test_streaming_analysis_uses_one_engine_process_and_resumes(tmp_path: Path):
+    engine = tmp_path / "fake_katago.py"
+    engine.write_text(
+        """#!/usr/bin/env python3
+import json
+import sys
+
+print("engine started", file=sys.stderr, flush=True)
+for line in sys.stdin:
+    query = json.loads(line)
+    for turn in query.get("analyzeTurns", [len(query.get("moves", []))]):
+        print(json.dumps({"id": query["id"], "turnNumber": turn, "isDuringSearch": False}), flush=True)
+""",
+        encoding="utf-8",
+    )
+    engine.chmod(0o755)
+    requests = tmp_path / "requests.jsonl"
+    requests.write_text(
+        "\n".join(
+            [
+                json.dumps({"id": "game-a", "moves": [], "analyzeTurns": [0, 1]}),
+                json.dumps({"id": "game-b", "moves": [], "analyzeTurns": [0]}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    responses = tmp_path / "responses.jsonl"
+    log = tmp_path / "analysis.log"
+
+    first_report = run_katago_analysis_streaming(
+        katago_bin=engine,
+        model=tmp_path / "model.bin.gz",
+        config=tmp_path / "analysis.cfg",
+        requests_path=requests,
+        out_path=responses,
+        log_path=log,
+        max_inflight_positions=1,
+    )
+    assert first_report["processes_started"] == 1
+    assert first_report["response_lines"] == 3
+    assert log.read_text(encoding="utf-8").count("engine started") == 1
+
+    resumed_report = run_katago_analysis_streaming(
+        katago_bin=engine,
+        model=tmp_path / "model.bin.gz",
+        config=tmp_path / "analysis.cfg",
+        requests_path=requests,
+        out_path=responses,
+        log_path=log,
+        max_inflight_positions=1,
+    )
+    assert resumed_report["processes_started"] == 0
+    assert resumed_report["resumed_responses"] == 3
+    assert log.read_text(encoding="utf-8").count("engine started") == 1

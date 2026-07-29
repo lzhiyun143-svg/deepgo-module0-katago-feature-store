@@ -11,6 +11,8 @@ __pycache__/
 # Local demo stores and generated feature stores
 demo_store/
 example_store/
+example_store_save
+analysis_logs
 katago_feature_store/
 normalized/
 raw/

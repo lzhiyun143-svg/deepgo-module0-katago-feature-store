@@ -92,9 +92,9 @@ python -m module0_katago_store.cli make-requests \
   --out /root/katago_feature_store/requests.jsonl
 ```
 
-Run KataGo analysis in chunks. The final merged output path is still
-`/root/katago_feature_store/raw.responses.jsonl`, so later normalize commands do
-not need to change:
+Run KataGo analysis as a streaming process. KataGo loads the model once, then
+receives all pending game queries through its open standard input. The final
+response path remains `/root/katago_feature_store/raw.responses.jsonl`:
 
 ```bash
 python -m module0_katago_store.cli run-analysis \
@@ -104,7 +104,7 @@ python -m module0_katago_store.cli run-analysis \
   --requests /root/katago_feature_store/requests.jsonl \
   --out /root/katago_feature_store/raw.responses.jsonl \
   --log /root/katago_feature_store/katago.analysis.log \
-  --chunk-lines 500
+  --max-inflight-positions 512
 ```
 
 Normalize KataGo responses:

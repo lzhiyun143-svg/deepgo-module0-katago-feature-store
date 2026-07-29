@@ -4,10 +4,10 @@ import argparse
 import json
 from pathlib import Path
 
-from .analysis import run_katago_analysis_chunked
-from .manifest import build_manifests
+from .analysis import run_katago_analysis_streaming
 from .benchmark import benchmark_report, setup_benchmark
 from .compare_benchmark import compare_benchmark
+from .manifest import build_manifests
 from .normalize import normalize_responses
 from .profile import AnalysisProfile
 from .qa import run_qa
@@ -61,15 +61,14 @@ def normalize_cmd(args: argparse.Namespace) -> None:
 
 
 def run_analysis_cmd(args: argparse.Namespace) -> None:
-    report = run_katago_analysis_chunked(
+    report = run_katago_analysis_streaming(
         katago_bin=Path(args.katago_bin),
         model=Path(args.model),
         config=Path(args.config),
         requests_path=Path(args.requests),
         out_path=Path(args.out),
         log_path=Path(args.log) if args.log else None,
-        work_dir=Path(args.work_dir) if args.work_dir else None,
-        chunk_lines=args.chunk_lines,
+        max_inflight_positions=args.max_inflight_positions,
         resume=not args.no_resume,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -130,8 +129,7 @@ def main() -> None:
     p.add_argument("--requests", default="/root/katago_feature_store/requests.jsonl")
     p.add_argument("--out", default="/root/katago_feature_store/raw.responses.jsonl")
     p.add_argument("--log", default="/root/katago_feature_store/katago.analysis.log")
-    p.add_argument("--work-dir")
-    p.add_argument("--chunk-lines", type=int, default=500)
+    p.add_argument("--max-inflight-positions", type=int, default=512)
     p.add_argument("--no-resume", action="store_true")
     p.set_defaults(func=run_analysis_cmd)
 

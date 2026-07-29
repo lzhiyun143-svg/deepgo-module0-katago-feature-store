@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
+import threading
 from pathlib import Path
+
+from tqdm import tqdm
 
 
 def _count_lines(path: Path) -> int:
@@ -11,55 +13,62 @@ def _count_lines(path: Path) -> int:
         return sum(1 for _ in fh)
 
 
-def _write_chunks(requests_path: Path, chunks_dir: Path, chunk_lines: int) -> list[Path]:
-    chunks_dir.mkdir(parents=True, exist_ok=True)
-    chunks: list[Path] = []
-    chunk_fh = None
-    try:
-        with requests_path.open("r", encoding="utf-8") as src:
-            for line_no, line in enumerate(src):
-                if line_no % chunk_lines == 0:
-                    if chunk_fh is not None:
-                        chunk_fh.close()
-                    chunk_path = chunks_dir / f"requests_part_{len(chunks):05d}.jsonl"
-                    chunks.append(chunk_path)
-                    chunk_fh = chunk_path.open("w", encoding="utf-8", newline="\n")
-                chunk_fh.write(line)
-    finally:
-        if chunk_fh is not None:
-            chunk_fh.close()
-    return chunks
+def _query_turns(query: dict) -> list[int]:
+    if "analyzeTurns" in query:
+        return [int(turn) for turn in query["analyzeTurns"]]
+    return [len(query.get("moves", []))]
 
 
-def _load_existing_chunks(chunks_dir: Path) -> list[Path]:
-    return sorted(chunks_dir.glob("requests_part_*.jsonl"))
+def _completed_positions(responses_path: Path) -> set[tuple[str, int]]:
+    if not responses_path.exists():
+        return set()
+
+    completed = set()
+    with responses_path.open("r", encoding="utf-8") as responses:
+        for line in responses:
+            response = json.loads(line)
+            if response.get("isDuringSearch") or "id" not in response or "turnNumber" not in response:
+                continue
+            completed.add((str(response["id"]), int(response["turnNumber"])))
+    return completed
 
 
-def _prepare_chunks(requests_path: Path, work_dir: Path, chunk_lines: int, resume: bool) -> list[Path]:
-    chunks_dir = work_dir / "requests"
-    manifest_path = work_dir / "chunk_manifest.json"
-    expected = {
-        "requests_path": str(requests_path),
-        "requests_size": requests_path.stat().st_size,
-        "requests_mtime_ns": requests_path.stat().st_mtime_ns,
-        "chunk_lines": chunk_lines,
-    }
-
-    if resume and manifest_path.exists():
-        actual = json.loads(manifest_path.read_text(encoding="utf-8"))
-        chunks = _load_existing_chunks(chunks_dir)
-        if actual == expected and chunks:
-            return chunks
-
-    if chunks_dir.exists():
-        shutil.rmtree(chunks_dir)
-    chunks = _write_chunks(requests_path, chunks_dir, chunk_lines)
-    work_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(json.dumps(expected, ensure_ascii=False, indent=2), encoding="utf-8")
-    return chunks
+def _iter_pending_queries(
+    requests_path: Path,
+    completed: set[tuple[str, int]],
+    max_inflight_positions: int,
+):
+    """Yield queries split so each has no more than the in-flight limit."""
+    with requests_path.open("r", encoding="utf-8") as requests:
+        for line in requests:
+            query = json.loads(line)
+            query_id = str(query["id"])
+            outstanding_turns = [
+                turn for turn in _query_turns(query) if (query_id, turn) not in completed
+            ]
+            for start in range(0, len(outstanding_turns), max_inflight_positions):
+                query_part = query.copy()
+                turns = outstanding_turns[start : start + max_inflight_positions]
+                if "analyzeTurns" in query_part:
+                    query_part["analyzeTurns"] = turns
+                yield json.dumps(query_part, ensure_ascii=False, separators=(",", ":")) + "\n", len(turns)
 
 
-def run_katago_analysis_chunked(
+def _count_pending_positions(
+    requests_path: Path, completed: set[tuple[str, int]]
+) -> int:
+    expected_responses = 0
+    with requests_path.open("r", encoding="utf-8") as requests:
+        for line in requests:
+            query = json.loads(line)
+            query_id = str(query["id"])
+            expected_responses += sum(
+                (query_id, turn) not in completed for turn in _query_turns(query)
+            )
+    return expected_responses
+
+
+def run_katago_analysis_streaming(
     *,
     katago_bin: Path,
     model: Path,
@@ -67,82 +76,107 @@ def run_katago_analysis_chunked(
     requests_path: Path,
     out_path: Path,
     log_path: Path | None = None,
-    work_dir: Path | None = None,
-    chunk_lines: int = 500,
+    max_inflight_positions: int = 512,
     resume: bool = True,
 ) -> dict:
-    if chunk_lines <= 0:
-        raise ValueError("chunk_lines must be positive")
+    """Run one long-lived KataGo analysis process and stream queries to its stdin.
+
+    The model is loaded once and stays resident until all pending queries have
+    completed. Only ``max_inflight_positions`` are queued in KataGo at once.
+    """
     if not requests_path.exists():
         raise FileNotFoundError(requests_path)
+    if max_inflight_positions <= 0:
+        raise ValueError("max_inflight_positions must be positive")
 
-    work_dir = work_dir or out_path.parent / f"katago_chunks_{chunk_lines}"
     log_path = log_path or out_path.with_suffix(".log")
-    chunks = _prepare_chunks(requests_path, work_dir, chunk_lines, resume)
-    responses_dir = work_dir / "responses"
-    logs_dir = work_dir / "logs"
-    responses_dir.mkdir(parents=True, exist_ok=True)
-    logs_dir.mkdir(parents=True, exist_ok=True)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
+    completed = _completed_positions(out_path) if resume else set()
+    expected_responses = _count_pending_positions(requests_path, completed)
+    if not resume and out_path.exists():
+        out_path.unlink()
+
     total_requests = _count_lines(requests_path)
-    completed = 0
     with log_path.open("a", encoding="utf-8", newline="\n") as main_log:
         main_log.write(
-            f"chunked analysis start: requests={requests_path} chunks={len(chunks)} "
-            f"chunk_lines={chunk_lines}\n"
+            f"streaming analysis start: requests={requests_path} "
+            f"expected_responses={expected_responses} "
+            f"max_inflight_positions={max_inflight_positions} "
+            f"resumed_responses={len(completed)}\n"
         )
         main_log.flush()
 
-        for idx, chunk_path in enumerate(chunks, 1):
-            response_path = responses_dir / f"{chunk_path.stem}.responses.jsonl"
-            chunk_log_path = logs_dir / f"{chunk_path.stem}.katago.log"
-            done_path = response_path.with_suffix(response_path.suffix + ".done")
-            if resume and done_path.exists() and response_path.exists() and response_path.stat().st_size > 0:
-                completed += 1
-                main_log.write(f"[{idx}/{len(chunks)}] skip {chunk_path.name}\n")
-                main_log.flush()
-                continue
+        if expected_responses:
+            output_mode = "a" if resume else "w"
+            with (
+                out_path.open(output_mode, encoding="utf-8", newline="\n") as output,
+                subprocess.Popen(
+                    [str(katago_bin), "analysis", "-model", str(model), "-config", str(config)],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=main_log,
+                    text=True,
+                    encoding="utf-8",
+                ) as process,
+                tqdm(total=expected_responses, desc="KataGo responses", unit="position") as progress,
+            ):
+                assert process.stdin is not None
+                assert process.stdout is not None
+                stdin = process.stdin
+                stdout = process.stdout
+                condition = threading.Condition()
+                in_flight_positions = 0
 
-            main_log.write(f"[{idx}/{len(chunks)}] run {chunk_path.name}\n")
-            main_log.flush()
-            if done_path.exists():
-                done_path.unlink()
-            with chunk_path.open("rb") as stdin, response_path.open("wb") as stdout, chunk_log_path.open("wb") as stderr:
-                subprocess.run(
-                    [
-                        str(katago_bin),
-                        "analysis",
-                        "-model",
-                        str(model),
-                        "-config",
-                        str(config),
-                    ],
-                    stdin=stdin,
-                    stdout=stdout,
-                    stderr=stderr,
-                    check=True,
-                )
-            if response_path.stat().st_size == 0:
-                raise RuntimeError(f"KataGo produced an empty response for {chunk_path}")
-            done_path.write_text("done\n", encoding="utf-8")
-            completed += 1
+                def drain_responses() -> None:
+                    nonlocal in_flight_positions
+                    for response_line in stdout:
+                        output.write(response_line)
+                        output.flush()
+                        response = json.loads(response_line)
+                        if not response.get("isDuringSearch") and "turnNumber" in response:
+                            progress.update(1)
+                            with condition:
+                                in_flight_positions -= 1
+                                condition.notify_all()
 
-    tmp_out = out_path.with_suffix(out_path.suffix + ".tmp")
-    with tmp_out.open("wb") as merged:
-        for chunk_path in chunks:
-            response_path = responses_dir / f"{chunk_path.stem}.responses.jsonl"
-            with response_path.open("rb") as part:
-                shutil.copyfileobj(part, merged)
-    tmp_out.replace(out_path)
+                reader = threading.Thread(target=drain_responses, daemon=True)
+                reader.start()
+                try:
+                    for submitted_queries, (query_line, position_count) in enumerate(
+                        _iter_pending_queries(
+                            requests_path, completed, max_inflight_positions
+                        ),
+                        1,
+                    ):
+                        with condition:
+                            while in_flight_positions + position_count > max_inflight_positions:
+                                condition.wait()
+                            in_flight_positions += position_count
+                        stdin.write(query_line)
+                        stdin.flush()
+                        if submitted_queries % 100 == 0:
+                            progress.set_postfix(queries=submitted_queries, queued=in_flight_positions)
+                except BrokenPipeError:
+                    process.wait()
+                    raise RuntimeError(f"KataGo exited early with code {process.returncode}") from None
+                finally:
+                    stdin.close()
 
+                reader.join()
+                exit_code = process.wait()
+                if exit_code:
+                    raise subprocess.CalledProcessError(exit_code, process.args)
+
+    response_lines = _count_lines(out_path) if out_path.exists() else 0
     return {
         "requests": str(requests_path),
         "output": str(out_path),
-        "work_dir": str(work_dir),
-        "chunk_lines": chunk_lines,
-        "chunks": len(chunks),
-        "completed_chunks": completed,
+        "processes_started": 1 if expected_responses else 0,
         "request_lines": total_requests,
-        "response_lines": _count_lines(out_path),
+        "expected_responses": expected_responses,
+        "max_inflight_positions": max_inflight_positions,
+        "resumed_responses": len(completed),
+        "response_lines": response_lines,
     }
