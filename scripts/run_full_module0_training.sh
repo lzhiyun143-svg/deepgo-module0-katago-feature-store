@@ -31,7 +31,16 @@ MAX_POSITIONS_PER_QUERY="${MAX_POSITIONS_PER_QUERY:-64}"
 NN_CACHE_SIZE_POWER_OF_TWO="${NN_CACHE_SIZE_POWER_OF_TWO:-22}"
 NN_MUTEX_POOL_SIZE_POWER_OF_TWO="${NN_MUTEX_POOL_SIZE_POWER_OF_TWO:-17}"
 ANALYSIS_LOGS_ROOT="${ANALYSIS_LOGS_ROOT:-$REPO_ROOT/analysis_logs}"
-RUN_ROOT="${RUN_ROOT:-$ANALYSIS_LOGS_ROOT/full_module0_training_$(date +%Y%m%d_%H%M%S)}"
+TUNING_MODE="${TUNING_MODE:-true}"
+if [[ "$TUNING_MODE" == "true" ]]; then
+  DEFAULT_RUN_ROOT="$ANALYSIS_LOGS_ROOT/full_module0_training_$(date +%Y%m%d_%H%M%S)"
+elif [[ "$TUNING_MODE" == "false" ]]; then
+  DEFAULT_RUN_ROOT="$ANALYSIS_LOGS_ROOT/full_module0_training"
+else
+  echo "ERROR: TUNING_MODE must be true or false, got: $TUNING_MODE"
+  exit 1
+fi
+RUN_ROOT="${RUN_ROOT:-$DEFAULT_RUN_ROOT}"
 STORE_ROOT="${STORE_ROOT:-$RUN_ROOT/feature_store/v1.0.0}"
 REQUESTS_OUT="${REQUESTS_OUT:-$RUN_ROOT/requests.jsonl}"
 RESPONSES_OUT="${RESPONSES_OUT:-$RUN_ROOT/raw.responses.jsonl}"
@@ -131,20 +140,29 @@ local_cuda_threads="${CUDA_NUM_NN_SERVER_THREADS_PER_MODEL:-1}"
 apply_cuda_settings "$ANALYSIS_CFG" "$local_cuda_device_ids" "$local_cuda_threads"
 
 echo "==> Using run root: $RUN_ROOT"
+echo "==> Tuning mode: $TUNING_MODE"
 echo "==> Using store root: $STORE_ROOT"
 echo "==> Using SGF dir: $SGF_DIR"
 echo "==> Using analysis config: $ANALYSIS_CFG"
 echo "==> maxVisits=$MAX_VISITS nnMaxBatchSize=$NN_MAX_BATCH_SIZE numAnalysisThreads=$NUM_ANALYSIS_THREADS numSearchThreadsPerAnalysisThread=$NUM_SEARCH_THREADS_PER_ANALYSIS_THREAD"
 echo "==> boardBuffer=${MAX_BOARD_X_SIZE_FOR_NN_BUFFER}x${MAX_BOARD_Y_SIZE_FOR_NN_BUFFER} maxInFlightPositions=$MAX_INFLIGHT_POSITIONS maxPositionsPerQuery=$MAX_POSITIONS_PER_QUERY nnCacheSizePowerOfTwo=$NN_CACHE_SIZE_POWER_OF_TWO"
 
-echo "[1/6] Initializing feature store"
-"$PYTHON_BIN" -m module0_katago_store.cli init-store --root "$STORE_ROOT" --max-visits "$MAX_VISITS"
+if [[ "$TUNING_MODE" == "false" \
+  && -f "$REQUESTS_OUT" \
+  && -f "$STORE_ROOT/metadata/analysis_profile.json" \
+  && -f "$STORE_ROOT/metadata/dataset_manifest.jsonl" \
+  && -f "$STORE_ROOT/metadata/position_manifest.jsonl" ]]; then
+  echo "[1-3/6] Reusing existing store manifests and requests for continuation"
+else
+  echo "[1/6] Initializing feature store"
+  "$PYTHON_BIN" -m module0_katago_store.cli init-store --root "$STORE_ROOT" --max-visits "$MAX_VISITS"
 
-echo "[2/6] Building manifests"
-"$PYTHON_BIN" -m module0_katago_store.cli build-manifest --sgf-dir "$SGF_DIR" --store-root "$STORE_ROOT"
+  echo "[2/6] Building manifests"
+  "$PYTHON_BIN" -m module0_katago_store.cli build-manifest --sgf-dir "$SGF_DIR" --store-root "$STORE_ROOT"
 
-echo "[3/6] Generating KataGo requests"
-"$PYTHON_BIN" -m module0_katago_store.cli make-requests --store-root "$STORE_ROOT" --out "$REQUESTS_OUT"
+  echo "[3/6] Generating KataGo requests"
+  "$PYTHON_BIN" -m module0_katago_store.cli make-requests --store-root "$STORE_ROOT" --out "$REQUESTS_OUT"
+fi
 
 echo "[4/6] Running KataGo analysis"
 "$PYTHON_BIN" -m module0_katago_store.cli run-analysis \

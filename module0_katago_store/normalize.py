@@ -79,7 +79,7 @@ def normalize_responses(
     for resp in read_jsonl(responses_path):
         if resp.get("isDuringSearch"):
             continue
-        game_id = resp.get("id")
+        game_id = str(resp.get("id", "")).split("#", 1)[0]
         turn = int(resp.get("turnNumber", resp.get("turn", 0)))
         pos = positions.get((game_id, turn))
         if pos is None:

@@ -105,6 +105,7 @@ def run_katago_analysis_streaming(
 
     completed = _completed_positions(out_path) if resume else set()
     expected_responses = _count_pending_positions(requests_path, completed)
+    total_positions = expected_responses + len(completed)
     if not resume and out_path.exists():
         out_path.unlink()
 
@@ -131,7 +132,12 @@ def run_katago_analysis_streaming(
                     text=True,
                     encoding="utf-8",
                 ) as process,
-                tqdm(total=expected_responses, desc="KataGo responses", unit="position") as progress,
+                tqdm(
+                    total=total_positions,
+                    initial=len(completed),
+                    desc="KataGo responses",
+                    unit="position",
+                ) as progress,
             ):
                 assert process.stdin is not None
                 assert process.stdout is not None

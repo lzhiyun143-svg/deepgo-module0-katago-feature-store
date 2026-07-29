@@ -41,7 +41,7 @@ def test_end_to_end_store(tmp_path: Path):
         responses,
         [
             {
-                "id": games[0]["game_id"],
+                "id": f"{games[0]['game_id']}#0",
                 "turnNumber": 0,
                 "policy": policy,
                 "ownership": np.zeros((19, 19), dtype=float).reshape(-1).tolist(),
