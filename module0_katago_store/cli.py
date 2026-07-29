@@ -69,6 +69,7 @@ def run_analysis_cmd(args: argparse.Namespace) -> None:
         out_path=Path(args.out),
         log_path=Path(args.log) if args.log else None,
         max_inflight_positions=args.max_inflight_positions,
+        max_positions_per_query=args.max_positions_per_query,
         resume=not args.no_resume,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -130,6 +131,7 @@ def main() -> None:
     p.add_argument("--out", default="/root/katago_feature_store/raw.responses.jsonl")
     p.add_argument("--log", default="/root/katago_feature_store/katago.analysis.log")
     p.add_argument("--max-inflight-positions", type=int, default=512)
+    p.add_argument("--max-positions-per-query", type=int, default=64)
     p.add_argument("--no-resume", action="store_true")
     p.set_defaults(func=run_analysis_cmd)
 

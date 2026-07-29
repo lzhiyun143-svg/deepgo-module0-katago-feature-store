@@ -102,6 +102,7 @@ for line in sys.stdin:
         out_path=responses,
         log_path=log,
         max_inflight_positions=1,
+        max_positions_per_query=1,
     )
     assert first_report["processes_started"] == 1
     assert first_report["response_lines"] == 3
@@ -115,6 +116,7 @@ for line in sys.stdin:
         out_path=responses,
         log_path=log,
         max_inflight_positions=1,
+        max_positions_per_query=1,
     )
     assert resumed_report["processes_started"] == 0
     assert resumed_report["resumed_responses"] == 3

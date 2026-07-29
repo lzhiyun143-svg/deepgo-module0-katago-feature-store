@@ -104,7 +104,8 @@ python -m module0_katago_store.cli run-analysis \
   --requests /root/katago_feature_store/requests.jsonl \
   --out /root/katago_feature_store/raw.responses.jsonl \
   --log /root/katago_feature_store/katago.analysis.log \
-  --max-inflight-positions 512
+  --max-inflight-positions 512 \
+  --max-positions-per-query 64
 ```
 
 Normalize KataGo responses:

@@ -37,8 +37,9 @@ def _iter_pending_queries(
     requests_path: Path,
     completed: set[tuple[str, int]],
     max_inflight_positions: int,
+    max_positions_per_query: int,
 ):
-    """Yield queries split so each has no more than the in-flight limit."""
+    """Yield valid per-game queries with bounded analyzeTurns lists."""
     with requests_path.open("r", encoding="utf-8") as requests:
         for line in requests:
             query = json.loads(line)
@@ -46,9 +47,9 @@ def _iter_pending_queries(
             outstanding_turns = [
                 turn for turn in _query_turns(query) if (query_id, turn) not in completed
             ]
-            for start in range(0, len(outstanding_turns), max_inflight_positions):
+            for start in range(0, len(outstanding_turns), max_positions_per_query):
                 query_part = query.copy()
-                turns = outstanding_turns[start : start + max_inflight_positions]
+                turns = outstanding_turns[start : start + max_positions_per_query]
                 if "analyzeTurns" in query_part:
                     query_part["analyzeTurns"] = turns
                 yield json.dumps(query_part, ensure_ascii=False, separators=(",", ":")) + "\n", len(turns)
@@ -77,17 +78,24 @@ def run_katago_analysis_streaming(
     out_path: Path,
     log_path: Path | None = None,
     max_inflight_positions: int = 512,
+    max_positions_per_query: int = 64,
     resume: bool = True,
 ) -> dict:
     """Run one long-lived KataGo analysis process and stream queries to its stdin.
 
     The model is loaded once and stays resident until all pending queries have
     completed. Only ``max_inflight_positions`` are queued in KataGo at once.
+    Long game requests are split into at most ``max_positions_per_query`` turns
+    per valid KataGo query so work from multiple games can interleave.
     """
     if not requests_path.exists():
         raise FileNotFoundError(requests_path)
     if max_inflight_positions <= 0:
         raise ValueError("max_inflight_positions must be positive")
+    if max_positions_per_query <= 0:
+        raise ValueError("max_positions_per_query must be positive")
+    if max_positions_per_query > max_inflight_positions:
+        raise ValueError("max_positions_per_query cannot exceed max_inflight_positions")
 
     log_path = log_path or out_path.with_suffix(".log")
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -104,6 +112,7 @@ def run_katago_analysis_streaming(
             f"streaming analysis start: requests={requests_path} "
             f"expected_responses={expected_responses} "
             f"max_inflight_positions={max_inflight_positions} "
+            f"max_positions_per_query={max_positions_per_query} "
             f"resumed_responses={len(completed)}\n"
         )
         main_log.flush()
@@ -146,7 +155,10 @@ def run_katago_analysis_streaming(
                 try:
                     for submitted_queries, (query_line, position_count) in enumerate(
                         _iter_pending_queries(
-                            requests_path, completed, max_inflight_positions
+                            requests_path,
+                            completed,
+                            max_inflight_positions,
+                            max_positions_per_query,
                         ),
                         1,
                     ):
@@ -177,6 +189,7 @@ def run_katago_analysis_streaming(
         "request_lines": total_requests,
         "expected_responses": expected_responses,
         "max_inflight_positions": max_inflight_positions,
+        "max_positions_per_query": max_positions_per_query,
         "resumed_responses": len(completed),
         "response_lines": response_lines,
     }
