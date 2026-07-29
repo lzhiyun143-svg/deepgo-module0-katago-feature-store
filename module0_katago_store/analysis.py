@@ -29,7 +29,8 @@ def _completed_positions(responses_path: Path) -> set[tuple[str, int]]:
             response = json.loads(line)
             if response.get("isDuringSearch") or "id" not in response or "turnNumber" not in response:
                 continue
-            completed.add((str(response["id"]), int(response["turnNumber"])))
+            game_id = str(response["id"]).split("#", 1)[0]
+            completed.add((game_id, int(response["turnNumber"])))
     return completed
 
 
@@ -49,10 +50,11 @@ def _iter_pending_queries(
             ]
             for start in range(0, len(outstanding_turns), max_positions_per_query):
                 query_part = query.copy()
+                query_part["id"] = f"{query_id}#{start}"
                 turns = outstanding_turns[start : start + max_positions_per_query]
                 if "analyzeTurns" in query_part:
                     query_part["analyzeTurns"] = turns
-                yield json.dumps(query_part, ensure_ascii=False, separators=(",", ":")) + "\n", len(turns)
+                yield json.dumps(query_part, ensure_ascii=False, separators=(",", ":")) + "\n", query_part["id"], len(turns)
 
 
 def _count_pending_positions(
@@ -137,6 +139,7 @@ def run_katago_analysis_streaming(
                 stdout = process.stdout
                 condition = threading.Condition()
                 in_flight_positions = 0
+                chunk_sizes: dict[str, int] = {}
 
                 def drain_responses() -> None:
                     nonlocal in_flight_positions
@@ -144,6 +147,11 @@ def run_katago_analysis_streaming(
                         output.write(response_line)
                         output.flush()
                         response = json.loads(response_line)
+                        if "error" in response:
+                            with condition:
+                                in_flight_positions -= chunk_sizes.pop(str(response.get("id")), 0)
+                                condition.notify_all()
+                            continue
                         if not response.get("isDuringSearch") and "turnNumber" in response:
                             progress.update(1)
                             with condition:
@@ -153,7 +161,7 @@ def run_katago_analysis_streaming(
                 reader = threading.Thread(target=drain_responses, daemon=True)
                 reader.start()
                 try:
-                    for submitted_queries, (query_line, position_count) in enumerate(
+                    for submitted_queries, (query_line, chunk_id, position_count) in enumerate(
                         _iter_pending_queries(
                             requests_path,
                             completed,
@@ -166,6 +174,7 @@ def run_katago_analysis_streaming(
                             while in_flight_positions + position_count > max_inflight_positions:
                                 condition.wait()
                             in_flight_positions += position_count
+                            chunk_sizes[chunk_id] = position_count
                         stdin.write(query_line)
                         stdin.flush()
                         if submitted_queries % 100 == 0:
