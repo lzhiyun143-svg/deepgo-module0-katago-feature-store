@@ -92,15 +92,19 @@ python -m module0_katago_store.cli make-requests \
   --out /root/katago_feature_store/requests.jsonl
 ```
 
-Run KataGo analysis:
+Run KataGo analysis in chunks. The final merged output path is still
+`/root/katago_feature_store/raw.responses.jsonl`, so later normalize commands do
+not need to change:
 
 ```bash
-/root/katago_bin/katago analysis \
-  -model /root/katago_bin/model.bin.gz \
-  -config /root/katago_bin/analysis.cfg \
-  < /root/katago_feature_store/requests.jsonl \
-  > /root/katago_feature_store/raw.responses.jsonl \
-  2> /root/katago_feature_store/katago.analysis.log
+python -m module0_katago_store.cli run-analysis \
+  --katago-bin /root/katago_bin/katago \
+  --model /root/katago_bin/model.bin.gz \
+  --config /root/katago_bin/analysis.cfg \
+  --requests /root/katago_feature_store/requests.jsonl \
+  --out /root/katago_feature_store/raw.responses.jsonl \
+  --log /root/katago_feature_store/katago.analysis.log \
+  --chunk-lines 500
 ```
 
 Normalize KataGo responses:

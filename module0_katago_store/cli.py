@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
+from .analysis import run_katago_analysis_chunked
 from .manifest import build_manifests
 from .benchmark import benchmark_report, setup_benchmark
 from .compare_benchmark import compare_benchmark
@@ -59,6 +60,21 @@ def normalize_cmd(args: argparse.Namespace) -> None:
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
 
+def run_analysis_cmd(args: argparse.Namespace) -> None:
+    report = run_katago_analysis_chunked(
+        katago_bin=Path(args.katago_bin),
+        model=Path(args.model),
+        config=Path(args.config),
+        requests_path=Path(args.requests),
+        out_path=Path(args.out),
+        log_path=Path(args.log) if args.log else None,
+        work_dir=Path(args.work_dir) if args.work_dir else None,
+        chunk_lines=args.chunk_lines,
+        resume=not args.no_resume,
+    )
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+
+
 def qa_cmd(args: argparse.Namespace) -> None:
     report = run_qa(Path(args.store_root))
     print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -106,6 +122,18 @@ def main() -> None:
     p.add_argument("--store-root", required=True)
     p.add_argument("--out", required=True)
     p.set_defaults(func=make_requests_cmd)
+
+    p = sub.add_parser("run-analysis")
+    p.add_argument("--katago-bin", default="/root/katago_bin/katago")
+    p.add_argument("--model", default="/root/katago_bin/model.bin.gz")
+    p.add_argument("--config", default="/root/katago_bin/analysis.cfg")
+    p.add_argument("--requests", default="/root/katago_feature_store/requests.jsonl")
+    p.add_argument("--out", default="/root/katago_feature_store/raw.responses.jsonl")
+    p.add_argument("--log", default="/root/katago_feature_store/katago.analysis.log")
+    p.add_argument("--work-dir")
+    p.add_argument("--chunk-lines", type=int, default=500)
+    p.add_argument("--no-resume", action="store_true")
+    p.set_defaults(func=run_analysis_cmd)
 
     p = sub.add_parser("normalize")
     p.add_argument("--store-root", required=True)
