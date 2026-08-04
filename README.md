@@ -290,6 +290,25 @@ Core package: `module0_katago_store/`
 - `compare_benchmark.py`: compares benchmark outputs against a baseline.
 - `io.py`: JSONL and atomic-write helpers.
 
+Module1 package: `module1_environment/`
+
+- `core/environment.py`: `MultiStepTaskEnv`, the Gym-style environment used by
+  Module4. It consumes Module0 features, maintains the objective Go state, and
+  returns `(observation, reward_components, done, info)`.
+- `core/go_state.py`: lightweight 19x19 Go rule state for legal moves, captures,
+  pass moves, board hashes, and 17-channel board tensors.
+- `core/action_resolver.py`: maps physical actions or Module4-style action
+  dictionaries to the unified 362-class Go action index.
+- `core/observation_builder.py`: builds the structured observation dictionary
+  expected by Module2/3/4.
+- `core/transition.py`: dataclass for transition records.
+- `adapters/module0_adapter.py`: stable adapter around
+  `module0_katago_store.FeatureStore`; it reads pre-decision KataGo features and
+  top candidate moves.
+- `datasets/episode_manifest.py`: loads Module0 `dataset_manifest.jsonl` and
+  creates replayable `EpisodeSpec` objects.
+- `logging/transition_writer.py`: writes JSONL transition logs.
+
 Auxiliary scripts:
 
 - `scripts/quick_tune_katago_params.sh`: short 300-second-per-case parameter
@@ -298,8 +317,10 @@ Auxiliary scripts:
 Tests:
 
 - `tests/test_module0.py`: minimal end-to-end smoke test.
+- `tests/test_module1_environment.py`: verifies Module1 reset/step behavior and
+  Module0 feature-store alignment.
 
-## Loader Example
+## Loader And Environment Examples
 
 ```python
 from module0_katago_store import FeatureStore
@@ -309,6 +330,39 @@ feat = store.get("kgs_ab12cd34__t000087", fields=["policy_map", "root_winrate"])
 batch = store.get_many(["kgs_ab12cd34__t000087"], fields=["policy_map"])
 meta = store.describe()
 ```
+
+```python
+from module1_environment import MultiStepTaskEnv
+
+env = MultiStepTaskEnv(
+    store_root="/root/katago_feature_store/v1.0.0",
+    transition_log_path="/root/module1_runs/transitions.jsonl",
+    max_steps=100,
+)
+
+obs = env.reset()
+
+# Physical Go action index in [0, 361], where 361 is pass.
+next_obs, reward_components, done, info = env.step(288)
+
+# Or let the resolver execute KataGo's current top candidate from Module0.
+next_obs, reward_components, done, info = env.step({"type": "katago_best"})
+
+env.close()
+```
+
+Module1 consumes these Module0 outputs:
+
+```text
+feature_store/v1.0.0/metadata/dataset_manifest.jsonl
+feature_store/v1.0.0/index/position_index.jsonl
+feature_store/v1.0.0/normalized/scalars/
+feature_store/v1.0.0/normalized/candidates/
+feature_store/v1.0.0/normalized/spatial/
+```
+
+Module1 does not run KataGo and does not train a model. It is the environment
+layer that standardizes observations and transitions for Module2/3/4.
 
 ## Expected Store Layout
 

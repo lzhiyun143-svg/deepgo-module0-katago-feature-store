@@ -11,5 +11,4 @@ dependencies = ["numpy", "tqdm"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["module0_katago_store*"]
-
+include = ["module0_katago_store*", "module1_environment*"]
