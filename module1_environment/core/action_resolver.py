@@ -21,13 +21,13 @@ class ActionResolver:
         if not isinstance(action, dict):
             raise TypeError(f"unsupported action type: {type(action)!r}")
 
-        kind = action.get("type", action.get("actor_source", "physical"))
+        kind = action.get("actor_source", action.get("type", "physical"))
         metadata = dict(action)
         if "action_index" in action:
             return ResolvedAction(action_to_index(action["action_index"]), str(kind), metadata)
         if "move" in action:
             return ResolvedAction(action_to_index(action["move"]), str(kind), metadata)
-        if kind in {"ai", "katago_best"}:
+        if kind in {"ai", "katago_best", "opponent_katago_best"}:
             candidates = observation.get("top_candidates", [])
             if not candidates:
                 raise ValueError("no KataGo candidate is available for ai action")

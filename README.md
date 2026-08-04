@@ -1,52 +1,29 @@
-# Module0 KataGo Feature Store
+# DeepGo Module0 + Module1
 
-This repository contains the Module0 implementation for building a shared
-KataGo feature store from Go game records. It prepares data for downstream
-human/user modeling modules, but it does not contain a model training script.
+This repository contains the code for:
 
-中文说明：本项目是 Module0 数据与特征生成部分。它把 KGS/SGF 棋谱解析成局面索引，
-生成 KataGo analysis 请求，再把 KataGo 输出标准化为后续 Module1-4 可读取的特征库。
-仓库只上传代码和小型辅助脚本，不上传大规模棋谱、KataGo 模型、KataGo 可执行文件或
-完整 raw responses。
+- Module0: a unified KataGo feature store built from KGS/SGF games.
+- Module1: a multi-step task environment that connects Module0 features with downstream Module2/3/4 experiments.
 
-## Module0 在整体项目中的位置
+Large generated data, KataGo binaries, KataGo models, raw responses, and `.npz` feature shards are intentionally not committed.
+
+## Overall Pipeline
 
 ```text
-KGS / SGF game records
-  -> Module0: build a unified KataGo feature store
-  -> Module1: user profile / player representation
-  -> Module2: human next-move prediction
-  -> Module3: move quality and mistake analysis
-  -> Module4: explanation, review, and training recommendation
+KGS / SGF games
+  -> Module0: parse games, run KataGo, normalize features
+  -> Module1: maintain task state, execute actions, log transitions
+  -> Module2: human next-move / user behavior model
+  -> Module3: belief, state tracking, and quality signals
+  -> Module4: high-level delegation policy, explanation, and training strategy
 ```
 
-Module0 是后续模块的数据底座。后续模块不需要重复解析 SGF 或直接读 KataGo 原始输出，
-只需要通过 `FeatureStore` 读取稳定的局面特征。
-
-## What It Does
-
-1. Parse SGF files and extract game metadata and move sequences.
-2. Build `dataset_manifest.jsonl` and `position_manifest.jsonl`.
-3. Generate KataGo Parallel Analysis Engine JSONL requests.
-4. Normalize KataGo JSONL responses into:
-   - `normalized/scalars/<split>/part-00000.jsonl`
-   - `normalized/candidates/<split>/part-00000.jsonl`
-   - `normalized/spatial/<split>/shard-00000.npz`
-   - `index/position_index.jsonl`
-5. Provide `FeatureStore.get()`, `FeatureStore.get_many()`, and
-   `FeatureStore.get_game()` for downstream modules.
-6. Run QA checks and benchmark different KataGo parameters.
-
-Typical features saved for each position include board state, side to move,
-human next move, KataGo policy, winrate, score lead, ownership map, candidate
-moves, and stable IDs.
+Module0 is the feature database. Module1 is the environment layer and the single source of truth for state transitions. Later modules should not directly rewrite board state.
 
 ## Server Paths Used In The Current Experiment
 
-The current Aliyun A10 server was configured with these paths:
-
 ```text
-Module0 code:        /root/module0_katago_feature_store
+Module0/1 code:      /root/module0_katago_feature_store
 Python environment: /root/module0_env
 KGS data:            /root/deepgo/data/kgs
 Feature store:       /root/katago_feature_store/v1.0.0
@@ -55,11 +32,7 @@ KataGo model:        /root/katago_bin/model.bin.gz
 KataGo config:       /root/katago_bin/analysis.cfg
 ```
 
-The KGS data was downloaded from `https://dl.u-go.net/gamerecords/` using the
-KGS archive list in the DeepGo data script. The current local GitHub repository
-does not include those archives.
-
-## Full Module0 Run Commands
+## Module0 Commands
 
 On the server:
 
@@ -76,7 +49,7 @@ python -m module0_katago_store.cli init-store \
   --max-visits 25
 ```
 
-Build manifests from KGS SGF files:
+Build manifests:
 
 ```bash
 python -m module0_katago_store.cli build-manifest \
@@ -92,9 +65,7 @@ python -m module0_katago_store.cli make-requests \
   --out /root/katago_feature_store/requests.jsonl
 ```
 
-Run KataGo analysis as a streaming process. KataGo loads the model once, then
-receives all pending game queries through its open standard input. The final
-response path remains `/root/katago_feature_store/raw.responses.jsonl`:
+Run KataGo analysis:
 
 ```bash
 python -m module0_katago_store.cli run-analysis \
@@ -108,7 +79,7 @@ python -m module0_katago_store.cli run-analysis \
   --max-positions-per-query 64
 ```
 
-Normalize KataGo responses:
+Normalize:
 
 ```bash
 python -m module0_katago_store.cli normalize \
@@ -116,14 +87,182 @@ python -m module0_katago_store.cli normalize \
   --responses /root/katago_feature_store/raw.responses.jsonl
 ```
 
-Run QA:
+QA:
 
 ```bash
 python -m module0_katago_store.cli qa \
   --store-root /root/katago_feature_store/v1.0.0
 ```
 
-## Current KataGo Setup
+## Module1 Usage
+
+Module1 exposes `MultiStepTaskEnv`. It accepts either physical Go actions or high-level Module4 delegation decisions.
+
+```python
+from module1_environment import EnvironmentConfig, EnvironmentMode, MultiStepTaskEnv
+
+env = MultiStepTaskEnv(
+    store_root="/root/katago_feature_store/v1.0.0",
+    transition_log_path="/root/module1_runs/transitions.jsonl",
+    config=EnvironmentConfig(
+        mode=EnvironmentMode.OFFLINE_REPLAY,
+        auto_opponent=True,
+    ),
+    max_steps=100,
+)
+
+obs = env.reset()
+next_obs, reward_components, done, info = env.step({"delegation": "ai"})
+env.close()
+```
+
+Supported action forms:
+
+```python
+env.step(288)                         # physical action index
+env.step("Q16")                       # physical GTP move
+env.step({"type": "katago_best"})     # use Module0/KataGo top candidate
+env.step({"delegation": "ai"})        # Module4 delegates to AI
+env.step({"delegation": "human"})     # replay or Module2 human model
+env.step({"delegation": "physical", "action_index": 288})
+```
+
+## Module1 Input And Output Contract
+
+Module1 consumes these Module0 files:
+
+```text
+feature_store/v1.0.0/metadata/dataset_manifest.jsonl
+feature_store/v1.0.0/index/position_index.jsonl
+feature_store/v1.0.0/normalized/scalars/
+feature_store/v1.0.0/normalized/candidates/
+feature_store/v1.0.0/normalized/spatial/
+```
+
+`reset()` and `step()` return `observation` with:
+
+```text
+ids                 episode_id, game_id, position_id, turn_number, split
+board               17 x 19 x 19 board tensor
+legal_mask          362 legal-action mask
+task_scalars        task-side scalar features
+katago_scalars      winrate, scoreLead, utility, policy entropy, top gap
+katago_spatial      ownership map and future spatial features
+top_candidates      KataGo candidate moves
+history_summary     compact transition history
+feature_mask        feature availability flags
+belief              Module3 belief state
+```
+
+`step()` returns:
+
+```text
+next_obs, reward_components, done, info
+```
+
+`info` includes:
+
+```text
+meta_decision          original Module4 decision
+physical_action        executed team-side action
+opponent_action        optional auto-opponent action
+module3_belief         updated belief state
+reward_components      decomposed reward
+state_hash_before      board-state hash before action
+state_hash_after       board-state hash after action
+```
+
+## Downstream Module Alignment
+
+Module2 input:
+
+```text
+observation["board"]
+observation["legal_mask"]
+observation["katago_scalars"]
+observation["top_candidates"]
+player_profile
+```
+
+Module2 output expected by Module1:
+
+```python
+{"action_index": 288}
+{"move": "Q16"}
+{"policy": [362 probabilities]}
+```
+
+Module3 input:
+
+```text
+observation
+transition/info
+previous_belief
+```
+
+Module3 output expected by Module1:
+
+```python
+{
+  "coherence": 0.5,
+  "understanding": 0.5,
+  "readiness": 0.5,
+  "agency_alignment": 0.5,
+  "trust_alignment": 0.5
+}
+```
+
+Module4 input:
+
+```text
+observation
+belief
+```
+
+Module4 output accepted by Module1:
+
+```python
+{"delegation": "human"}
+{"delegation": "ai"}
+{"delegation": "physical", "action_index": 288}
+```
+
+## Code File Guide
+
+Module0 package: `module0_katago_store/`
+
+- `cli.py`: command-line entry point.
+- `manifest.py`: builds game and position manifests.
+- `sgf.py`: SGF parser.
+- `coords.py`: Go coordinate conversion.
+- `ids.py`: stable ID helpers.
+- `profile.py`: KataGo analysis profile metadata.
+- `requests.py`: builds KataGo JSONL requests.
+- `analysis.py`: streams requests through KataGo analysis.
+- `normalize.py`: normalizes KataGo responses into store files.
+- `loader.py`: public `FeatureStore` API.
+- `qa.py`: feature-store QA.
+- `benchmark.py`: benchmark setup and reports.
+- `compare_benchmark.py`: benchmark comparison.
+
+Module1 package: `module1_environment/`
+
+- `core/environment.py`: main `MultiStepTaskEnv`.
+- `core/types.py`: environment modes, config, and model protocols.
+- `core/go_state.py`: lightweight Go board/rule state.
+- `core/action_resolver.py`: resolves physical, AI, human, and policy actions.
+- `core/observation_builder.py`: builds downstream observations.
+- `core/opponent_driver.py`: optional opponent move driver.
+- `core/reward.py`: decomposed reward calculation.
+- `core/transition.py`: transition record schema.
+- `adapters/module0_adapter.py`: reads Module0 features.
+- `adapters/module2_adapter.py`: wraps a human/user model.
+- `adapters/module3_adapter.py`: wraps a belief/state model.
+- `adapters/module4_adapter.py`: normalizes delegation decisions.
+- `datasets/episode_manifest.py`: creates replayable episodes.
+- `logging/transition_writer.py`: writes JSONL transition logs.
+
+## KataGo Setup
 
 KataGo executable:
 
@@ -140,8 +279,7 @@ kata1-b28c512nbt-s13255194368-d5935380940.bin.gz
 Source: https://katagotraining.org/networks/
 ```
 
-Current recommended analysis parameters, based on the quick tuning run on one
-NVIDIA A10:
+Recommended A10 analysis config from quick tuning:
 
 ```text
 maxVisits = 25
@@ -151,54 +289,15 @@ numSearchThreadsPerAnalysisThread = 4
 reportAnalysisWinratesAs = SIDETOMOVE
 ```
 
-These values are written in `/root/katago_bin/analysis.cfg` on the server.
-A copy of the tuned config is included in this repository:
+A copy is included at:
 
 ```text
 configs/analysis.a10.maxvisits25.cfg
 ```
 
-## Local runtime and benchmark configuration
+## Benchmark Result Summary
 
-The repository now uses a repo-scoped `.env` file for local KataGo runtime and
-benchmark settings. The tuning script at `scripts/quick_tune_katago_params.sh`
-automatically loads `.env` from the repository root, so you no longer need to
-hard-code `/root/...` paths into the script.
-
-The following variables are supported:
-
-```bash
-KATAGO=/path/to/katago
-MODEL=/path/to/model.bin.gz
-CONFIG=/path/to/analysis.cfg
-BASE_CONFIG=/path/to/analysis.cfg
-REQUESTS=/path/to/requests.jsonl
-OUT_ROOT=/path/to/analysis_logs/quick_param_tuning
-SECONDS_PER_CASE=300
-
-# Optional CUDA tuning
-CUDA_DEVICE_IDS=0
-CUDA_NUM_NN_SERVER_THREADS_PER_MODEL=1
-CUDA_USE_FP16=auto
-
-# Ensure the conda runtime can find cuDNN
-LD_LIBRARY_PATH=/path/to/conda/env/lib:${LD_LIBRARY_PATH:-}
-```
-
-The script uses these values to:
-
-- choose the KataGo binary, model, config, and request file
-- create a per-run output directory under `analysis_logs/`
-- write per-case configs with stronger GPU/CPU-oriented defaults for the
-  benchmark sweep
-- apply optional CUDA device selection and FP16 settings
-
-A ready-to-copy example environment file is available at `.env.example`. After modifying that, you can copy it to `.env` in the repository to make the tuning script work without further edits.
-
-## Quick Parameter Tuning Result
-
-Quick tuning was run on 2026-07-28 with 100 benchmark games. Each parameter
-group was tested for about 300 seconds.
+Quick tuning on one NVIDIA A10:
 
 | Case | maxVisits | nnMaxBatchSize | numAnalysisThreads | numSearchThreads | GPU avg | GPU max | Lines/s |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -207,49 +306,13 @@ group was tested for about 300 seconds.
 | `v25_batch256_a8_s4` | 25 | 256 | 8 | 4 | 90.0% | 98% | 28.72 |
 | `v25_batch128_a8_s4` | 25 | 128 | 8 | 4 | 92.7% | 98% | 29.07 |
 
-The recommended configuration is `v25_batch128_a8_s4`: it increased GPU average
-utilization from 43.0% to 92.7% and improved throughput from 11.91 to 29.07
-lines/s compared with the baseline.
-
-Run the quick tuning script on the server:
-
-```bash
-nohup bash /root/katago_benchmark/quick_tune_katago_params.sh \
-  > /root/katago_benchmark/quick_tune_katago_params.log 2>&1 &
-```
-
-Check progress:
-
-```bash
-tail -f /root/katago_benchmark/quick_tune_katago_params.log
-```
-
-Check the summary:
-
-```bash
-cat /root/katago_benchmark/quick_param_tuning_*/summary.csv
-```
-
-## Benchmark Commands
-
-The code also supports full benchmark setup/report/compare commands through
-the CLI:
-
-```bash
-python -m module0_katago_store.cli benchmark-setup --help
-python -m module0_katago_store.cli benchmark-report --help
-python -m module0_katago_store.cli benchmark-compare --help
-```
-
-Earlier benchmark settings:
+Earlier benchmark:
 
 ```text
 Games: 100
 maxVisits tested: 1, 25, 50, 100
-Normalized comparable positions: 16600
+Comparable positions: 16600
 ```
-
-Main findings from the earlier complete benchmark:
 
 ```text
 maxVisits=25 vs 100:
@@ -263,134 +326,12 @@ maxVisits=50 vs 100:
   scoreLead mean absolute delta: 0.280941
 ```
 
-`maxVisits=1` is useful for fast policy-style extraction but does not reliably
-produce search Top-1 candidate information.
-
-## Code File Guide
-
-Core package: `module0_katago_store/`
-
-- `cli.py`: command-line entry point for `init-store`, `build-manifest`,
-  `make-requests`, `normalize`, `qa`, and benchmark commands.
-- `manifest.py`: scans SGF files and builds game-level and position-level
-  manifests with stable IDs.
-- `sgf.py`: lightweight SGF parser for board size, rules, komi, players,
-  result, and moves.
-- `coords.py`: Go coordinate conversion utilities, including pass moves and
-  the skipped `I` column.
-- `ids.py`: stable `game_id` and `position_id` helpers.
-- `profile.py`: immutable KataGo analysis profile metadata.
-- `requests.py`: converts position manifests into KataGo JSONL requests.
-- `normalize.py`: converts raw KataGo responses into scalars, candidate moves,
-  spatial `.npz` shards, and position index records.
-- `loader.py`: public `FeatureStore` API for downstream modules.
-- `schema.py`: shared schema constants and exceptions.
-- `qa.py`: feature-store quality checks.
-- `benchmark.py`: creates benchmark folders and runner scripts.
-- `compare_benchmark.py`: compares benchmark outputs against a baseline.
-- `io.py`: JSONL and atomic-write helpers.
-
-Module1 package: `module1_environment/`
-
-- `core/environment.py`: `MultiStepTaskEnv`, the Gym-style environment used by
-  Module4. It consumes Module0 features, maintains the objective Go state, and
-  returns `(observation, reward_components, done, info)`.
-- `core/go_state.py`: lightweight 19x19 Go rule state for legal moves, captures,
-  pass moves, board hashes, and 17-channel board tensors.
-- `core/action_resolver.py`: maps physical actions or Module4-style action
-  dictionaries to the unified 362-class Go action index.
-- `core/observation_builder.py`: builds the structured observation dictionary
-  expected by Module2/3/4.
-- `core/transition.py`: dataclass for transition records.
-- `adapters/module0_adapter.py`: stable adapter around
-  `module0_katago_store.FeatureStore`; it reads pre-decision KataGo features and
-  top candidate moves.
-- `datasets/episode_manifest.py`: loads Module0 `dataset_manifest.jsonl` and
-  creates replayable `EpisodeSpec` objects.
-- `logging/transition_writer.py`: writes JSONL transition logs.
-
-Auxiliary scripts:
-
-- `scripts/quick_tune_katago_params.sh`: short 300-second-per-case parameter
-  tuning script for checking GPU utilization and throughput.
-
-Tests:
-
-- `tests/test_module0.py`: minimal end-to-end smoke test.
-- `tests/test_module1_environment.py`: verifies Module1 reset/step behavior and
-  Module0 feature-store alignment.
-
-## Loader And Environment Examples
-
-```python
-from module0_katago_store import FeatureStore
-
-store = FeatureStore("/root/katago_feature_store/v1.0.0")
-feat = store.get("kgs_ab12cd34__t000087", fields=["policy_map", "root_winrate"])
-batch = store.get_many(["kgs_ab12cd34__t000087"], fields=["policy_map"])
-meta = store.describe()
-```
-
-```python
-from module1_environment import MultiStepTaskEnv
-
-env = MultiStepTaskEnv(
-    store_root="/root/katago_feature_store/v1.0.0",
-    transition_log_path="/root/module1_runs/transitions.jsonl",
-    max_steps=100,
-)
-
-obs = env.reset()
-
-# Physical Go action index in [0, 361], where 361 is pass.
-next_obs, reward_components, done, info = env.step(288)
-
-# Or let the resolver execute KataGo's current top candidate from Module0.
-next_obs, reward_components, done, info = env.step({"type": "katago_best"})
-
-env.close()
-```
-
-Module1 consumes these Module0 outputs:
-
-```text
-feature_store/v1.0.0/metadata/dataset_manifest.jsonl
-feature_store/v1.0.0/index/position_index.jsonl
-feature_store/v1.0.0/normalized/scalars/
-feature_store/v1.0.0/normalized/candidates/
-feature_store/v1.0.0/normalized/spatial/
-```
-
-Module1 does not run KataGo and does not train a model. It is the environment
-layer that standardizes observations and transitions for Module2/3/4.
-
-## Expected Store Layout
-
-```text
-katago_feature_store/
-  v1.0.0/
-    metadata/
-      analysis_profile.json
-      schema.json
-      dataset_manifest.jsonl
-      position_manifest.jsonl
-      generation_report.json
-    raw/
-    normalized/
-      scalars/train/part-00000.jsonl
-      candidates/train/part-00000.jsonl
-      spatial/train/shard-00000.npz
-    index/
-      position_index.jsonl
-    logs/
-```
-
 ## What Should Not Be Committed
 
-Do not commit generated data or heavy binaries to GitHub:
+Do not commit:
 
 - KGS archives and extracted full data.
-- KataGo executable files.
+- KataGo executables.
 - KataGo model files such as `*.bin.gz`.
 - Full `raw.responses*.jsonl`.
 - Generated `normalized/` feature stores.
@@ -399,8 +340,8 @@ Do not commit generated data or heavy binaries to GitHub:
 
 Recommended GitHub content:
 
-- Source code in `module0_katago_store/`.
-- Small scripts in `scripts/`.
+- Source code in `module0_katago_store/` and `module1_environment/`.
+- Small configs and scripts.
 - Tests.
 - README and project metadata.
-- Small benchmark summary tables if needed.
+- Small benchmark summaries.

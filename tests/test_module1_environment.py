@@ -9,7 +9,7 @@ from module0_katago_store.manifest import build_manifests
 from module0_katago_store.normalize import normalize_responses
 from module0_katago_store.profile import AnalysisProfile
 from module0_katago_store.schema import REQUIRED_SCHEMA
-from module1_environment import MultiStepTaskEnv
+from module1_environment import EnvironmentConfig, MultiStepTaskEnv
 from module1_environment.core.go_state import GoState
 
 
@@ -87,3 +87,36 @@ def test_module1_reset_step_and_module0_join(tmp_path: Path):
 
     rows = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
     assert rows[0]["position_id_before"] == positions[0]["position_id"]
+
+
+def test_module1_accepts_module4_delegation_and_updates_belief(tmp_path: Path):
+    store, _ = _make_store(tmp_path)
+    env = MultiStepTaskEnv(store_root=store, max_steps=2)
+    obs = env.reset()
+    assert "belief" in obs
+
+    next_obs, reward_components, done, info = env.step({"delegation": "ai", "confidence": 0.8})
+
+    assert info["meta_decision"]["delegation"] == "ai"
+    assert info["physical_action"]["actor_source"] == "ai"
+    assert info["module3_belief"]["last_actor_source"] == "ai"
+    assert next_obs["belief"] == info["module3_belief"]
+    assert isinstance(reward_components["total"], float)
+    assert not done
+    env.close()
+
+
+def test_module1_auto_opponent_closes_two_ply_step(tmp_path: Path):
+    store, _ = _make_store(tmp_path)
+    config = EnvironmentConfig(auto_opponent=True)
+    env = MultiStepTaskEnv(store_root=store, config=config, max_steps=3)
+    env.reset()
+
+    next_obs, _, done, info = env.step({"delegation": "human"})
+
+    assert info["physical_action"]["actor_source"] == "offline_replay"
+    assert info["opponent_action"] is not None
+    assert info["opponent_action"]["legal"]
+    assert next_obs["ids"]["turn_number"] == 2
+    assert not done
+    env.close()

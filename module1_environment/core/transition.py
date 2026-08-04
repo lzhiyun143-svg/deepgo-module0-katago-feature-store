@@ -21,6 +21,11 @@ class TransitionRecord:
     captured_count: int = 0
     reward_components: dict[str, float] = field(default_factory=dict)
     action_metadata: dict[str, Any] = field(default_factory=dict)
+    meta_decision: dict[str, Any] = field(default_factory=dict)
+    physical_action: dict[str, Any] = field(default_factory=dict)
+    opponent_action: dict[str, Any] | None = None
+    module3_belief: dict[str, Any] | None = None
+    interaction_metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)
