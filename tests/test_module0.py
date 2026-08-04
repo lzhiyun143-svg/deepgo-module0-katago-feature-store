@@ -1,4 +1,6 @@
 import json
+import os
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -80,6 +82,11 @@ for line in sys.stdin:
         encoding="utf-8",
     )
     engine.chmod(0o755)
+    katago_bin = engine
+    if os.name == "nt":
+        launcher = tmp_path / "fake_katago.cmd"
+        launcher.write_text(f'@"{sys.executable}" "{engine}" %*\n', encoding="utf-8")
+        katago_bin = launcher
     requests = tmp_path / "requests.jsonl"
     requests.write_text(
         "\n".join(
@@ -95,7 +102,7 @@ for line in sys.stdin:
     log = tmp_path / "analysis.log"
 
     first_report = run_katago_analysis_streaming(
-        katago_bin=engine,
+        katago_bin=katago_bin,
         model=tmp_path / "model.bin.gz",
         config=tmp_path / "analysis.cfg",
         requests_path=requests,
@@ -109,7 +116,7 @@ for line in sys.stdin:
     assert log.read_text(encoding="utf-8").count("engine started") == 1
 
     resumed_report = run_katago_analysis_streaming(
-        katago_bin=engine,
+        katago_bin=katago_bin,
         model=tmp_path / "model.bin.gz",
         config=tmp_path / "analysis.cfg",
         requests_path=requests,
